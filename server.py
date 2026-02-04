@@ -1,29 +1,18 @@
-import os
-import json
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import httpx
-import asyncio
-from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from typing import Any, Optional
-import uuid
+import os
 
-app = FastAPI(title="bdgSignal MCP Server")
-
-# CORS für LangSmith
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI()
 
 # Supabase Config
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ojsgvzqsqtlogrtviucn.supabase.co")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 
-# Tool Definitions
+# Default account_id für LangSmith Testing (bdg Account)
+DEFAULT_ACCOUNT_ID = "7c634307-06b4-48fd-b75a-0b3c8900bf66"
+
+# Tool Definitions mit account_id Parameter
 TOOLS = [
     {
         "name": "metrics_query",
@@ -31,30 +20,33 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
                 "metric_type": {"type": "string", "enum": ["email", "website", "paid", "organic", "leads"]},
                 "date_range": {"type": "string", "enum": ["7d", "30d", "90d", "ytd"]},
-                "brand_id": {"type": "string", "description": "Optional brand UUID"}
+                "brand_id": {"type": "string", "description": "Optional brand filter"}
             },
-            "required": ["metric_type", "date_range"]
+            "required": ["metric_type"]
         }
     },
     {
         "name": "goals_status",
-        "description": "Get current goal progress and status",
+        "description": "Get goal progress and master funnel status (2,200 leads/year target)",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "goal_type": {"type": "string", "enum": ["leads", "mqls", "revenue"]},
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
+                "goal_type": {"type": "string", "enum": ["leads", "mqls", "revenue", "channel_specific"]},
                 "period": {"type": "string", "enum": ["monthly", "quarterly", "yearly"]}
             }
         }
     },
     {
         "name": "insights_list",
-        "description": "List AI-generated insights for dashboard",
+        "description": "List existing AI insights for dashboard",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
                 "dashboard_context": {"type": "string", "enum": ["email", "website", "paid", "organic", "leads", "executive"]},
                 "status": {"type": "string", "enum": ["new", "seen", "actioned"]},
                 "limit": {"type": "integer", "default": 10}
@@ -67,7 +59,8 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "dashboard_context": {"type": "string"},
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
+                "dashboard_context": {"type": "string", "enum": ["email", "website", "paid", "organic", "leads", "executive"]},
                 "focus_area": {"type": "string"}
             },
             "required": ["dashboard_context"]
@@ -75,12 +68,13 @@ TOOLS = [
     },
     {
         "name": "memory_search",
-        "description": "Search historical knowledge and patterns",
+        "description": "Search knowledge base for historical context",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "category": {"type": "string"},
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
+                "query": {"type": "string", "description": "Search query"},
+                "category": {"type": "string", "enum": ["email", "website", "paid", "goals", "insights"]},
                 "limit": {"type": "integer", "default": 5}
             },
             "required": ["query"]
@@ -88,38 +82,44 @@ TOOLS = [
     },
     {
         "name": "memory_save",
-        "description": "Save new knowledge to memory",
+        "description": "Save new knowledge to memory (requires confirmation)",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "memory_type": {"type": "string"},
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
+                "memory_type": {"type": "string", "enum": ["metric_snapshot", "insight", "learning", "action_taken"]},
                 "category": {"type": "string"},
                 "content": {"type": "string"},
-                "structured_data": {"type": "object"}
+                "structured_data": {"type": "object"},
+                "confirmed": {"type": "boolean", "default": False}
             },
             "required": ["memory_type", "content"]
         }
     },
     {
         "name": "schema_describe",
-        "description": "Describe available data structures",
+        "description": "Describe available data structures in bdgSignal",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
+                "table_name": {"type": "string"},
                 "category": {"type": "string", "enum": ["marketing", "email", "contacts", "tracking", "goals"]}
             }
         }
     },
     {
         "name": "contacts_create",
-        "description": "Create a new contact (requires confirmation)",
+        "description": "Create new contact (requires confirmation)",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
                 "email": {"type": "string"},
                 "first_name": {"type": "string"},
                 "last_name": {"type": "string"},
                 "company_name": {"type": "string"},
+                "source": {"type": "string"},
                 "confirmed": {"type": "boolean", "default": False}
             },
             "required": ["email"]
@@ -127,28 +127,59 @@ TOOLS = [
     },
     {
         "name": "contacts_update",
-        "description": "Update contact (requires confirmation)",
+        "description": "Update existing contact (requires confirmation)",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
                 "contact_id": {"type": "string"},
-                "email": {"type": "string"},
-                "updates": {"type": "object"},
+                "email": {"type": "string", "description": "Fallback lookup by email"},
+                "updates": {
+                    "type": "object",
+                    "properties": {
+                        "first_name": {"type": "string"},
+                        "lifecycle_stage": {"type": "string"},
+                        "lead_score_adjustment": {"type": "integer"},
+                        "add_tags": {"type": "array", "items": {"type": "string"}},
+                        "remove_tags": {"type": "array", "items": {"type": "string"}}
+                    }
+                },
                 "confirmed": {"type": "boolean", "default": False}
-            }
+            },
+            "required": ["updates"]
         }
     },
     {
         "name": "segments_create",
-        "description": "Create a new segment (requires confirmation)",
+        "description": "Create new segment (requires confirmation)",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
                 "name": {"type": "string"},
+                "description": {"type": "string"},
                 "rules": {"type": "object"},
                 "confirmed": {"type": "boolean", "default": False}
             },
-            "required": ["name", "rules"]
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "campaigns_create",
+        "description": "Create email campaign as DRAFT (requires confirmation, never auto-sends)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
+                "name": {"type": "string"},
+                "brand_id": {"type": "string"},
+                "subject": {"type": "string"},
+                "preheader": {"type": "string"},
+                "html_content": {"type": "string"},
+                "segment_ids": {"type": "array", "items": {"type": "string"}},
+                "confirmed": {"type": "boolean", "default": False}
+            },
+            "required": ["name", "brand_id", "subject"]
         }
     },
     {
@@ -157,32 +188,21 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "account_id": {"type": "string", "description": "Account ID (optional, defaults to test account)"},
                 "name": {"type": "string"},
+                "description": {"type": "string"},
                 "brand_id": {"type": "string"},
-                "trigger_type": {"type": "string", "enum": ["doi_confirmed", "tag_added", "score_reached", "manual"]},
+                "trigger_type": {"type": "string"},
                 "template": {"type": "string", "enum": ["welcome_series", "re_engagement", "lead_nurturing", "score_threshold"]},
                 "confirmed": {"type": "boolean", "default": False}
             },
             "required": ["name"]
         }
-    },
-    {
-        "name": "campaigns_create",
-        "description": "Create campaign as DRAFT (requires confirmation)",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "brand_id": {"type": "string"},
-                "subject": {"type": "string"},
-                "confirmed": {"type": "boolean", "default": False}
-            },
-            "required": ["name", "brand_id", "subject"]
-        }
     }
 ]
 
-TOOL_TO_FUNCTION = {
+# Mapping Tool Name -> Edge Function
+TOOL_ENDPOINTS = {
     "metrics_query": "ai-metrics-query",
     "goals_status": "ai-goals-status",
     "insights_list": "ai-insights-list",
@@ -193,133 +213,118 @@ TOOL_TO_FUNCTION = {
     "contacts_create": "ai-contacts-create",
     "contacts_update": "ai-contacts-update",
     "segments_create": "ai-segments-create",
-    "workflows_create": "ai-workflows-create",
     "campaigns_create": "ai-campaigns-create",
+    "workflows_create": "ai-workflows-create"
 }
-
-
-async def call_edge_function(tool_name: str, arguments: dict, jwt: str = None) -> dict:
-    """Call Supabase Edge Function"""
-    function_name = TOOL_TO_FUNCTION.get(tool_name)
-    if not function_name:
-        return {"error": f"Unknown tool: {tool_name}"}
-    
-    url = f"{SUPABASE_URL}/functions/v1/{function_name}"
-    headers = {
-        "Content-Type": "application/json",
-        "apikey": SUPABASE_ANON_KEY,
-    }
-    if jwt:
-        headers["Authorization"] = f"Bearer {jwt}"
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.post(url, json=arguments, headers=headers)
-            if response.status_code >= 400:
-                return {"error": response.text, "status": response.status_code}
-            return response.json()
-        except Exception as e:
-            return {"error": str(e)}
-
-
-def create_jsonrpc_response(id: Any, result: Any = None, error: dict = None) -> dict:
-    """Create JSON-RPC 2.0 response"""
-    response = {"jsonrpc": "2.0", "id": id}
-    if error:
-        response["error"] = error
-    else:
-        response["result"] = result
-    return response
-
-
-async def handle_jsonrpc(request_data: dict) -> dict:
-    """Handle JSON-RPC request"""
-    method = request_data.get("method", "")
-    params = request_data.get("params", {})
-    req_id = request_data.get("id")
-    
-    # Initialize
-    if method == "initialize":
-        return create_jsonrpc_response(req_id, {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {"listChanged": False}
-            },
-            "serverInfo": {
-                "name": "bdgSignal",
-                "version": "1.0.0"
-            }
-        })
-    
-    # List tools
-    elif method == "tools/list":
-        return create_jsonrpc_response(req_id, {"tools": TOOLS})
-    
-    # Call tool
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-        
-        if tool_name not in TOOL_TO_FUNCTION:
-            return create_jsonrpc_response(req_id, error={
-                "code": -32602,
-                "message": f"Unknown tool: {tool_name}"
-            })
-        
-        result = await call_edge_function(tool_name, arguments)
-        
-        return create_jsonrpc_response(req_id, {
-            "content": [{"type": "text", "text": json.dumps(result)}]
-        })
-    
-    # Ping
-    elif method == "ping":
-        return create_jsonrpc_response(req_id, {})
-    
-    # Unknown method
-    else:
-        return create_jsonrpc_response(req_id, error={
-            "code": -32601,
-            "message": f"Method not found: {method}"
-        })
-
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "service": "bdgSignal MCP Server", "protocol": "MCP"}
-
-
-@app.api_route("/mcp", methods=["GET", "POST"])
-async def mcp_endpoint(request: Request):
-    """MCP Streamable HTTP endpoint"""
-    
-    if request.method == "GET":
-        # SSE stream for server-initiated messages (not used for now)
-        async def event_stream():
-            yield f"data: {json.dumps({'type': 'ping'})}\n\n"
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
-    
-    # POST - Handle JSON-RPC requests
-    try:
-        body = await request.json()
-    except:
-        return Response(
-            content=json.dumps(create_jsonrpc_response(None, error={
-                "code": -32700,
-                "message": "Parse error"
-            })),
-            media_type="application/json"
-        )
-    
-    # Handle batch or single request
-    if isinstance(body, list):
-        responses = [await handle_jsonrpc(req) for req in body]
-        return Response(content=json.dumps(responses), media_type="application/json")
-    else:
-        response = await handle_jsonrpc(body)
-        return Response(content=json.dumps(response), media_type="application/json")
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "ok", "server": "bdg-mcp-server"}
+
+
+@app.post("/mcp")
+async def mcp_handler(request: Request):
+    """JSON-RPC 2.0 Handler for MCP Protocol"""
+    try:
+        body = await request.json()
+    except:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None})
+    
+    jsonrpc = body.get("jsonrpc")
+    method = body.get("method")
+    params = body.get("params", {})
+    req_id = body.get("id")
+    
+    if jsonrpc != "2.0":
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": req_id})
+    
+    # Handle MCP methods
+    if method == "initialize":
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "bdg-mcp-server", "version": "1.0.0"}
+            }
+        })
+    
+    elif method == "tools/list":
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"tools": TOOLS}
+        })
+    
+    elif method == "tools/call":
+        tool_name = params.get("name")
+        tool_args = params.get("arguments", {})
+        
+        if tool_name not in TOOL_ENDPOINTS:
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": f"Unknown tool: {tool_name}"}
+            })
+        
+        # Get account_id from args or use default
+        account_id = tool_args.get("account_id") or DEFAULT_ACCOUNT_ID
+        
+        # Always include account_id in the request to Edge Function
+        tool_args["account_id"] = account_id
+        
+        # Call Edge Function
+        endpoint = TOOL_ENDPOINTS[tool_name]
+        url = f"{SUPABASE_URL}/functions/v1/{endpoint}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(
+                    url,
+                    json=tool_args,
+                    headers={
+                        "Content-Type": "application/json",
+                        "apikey": SUPABASE_ANON_KEY,
+                        "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+                    }
+                )
+                
+                result_text = response.text
+                try:
+                    result_data = response.json()
+                except:
+                    result_data = {"raw": result_text}
+                
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": str(result_data) if isinstance(result_data, dict) else result_text
+                            }
+                        ]
+                    }
+                })
+                
+            except Exception as e:
+                return JSONResponse({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32000, "message": f"Edge Function error: {str(e)}"}
+                })
+    
+    else:
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"}
+        })
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
