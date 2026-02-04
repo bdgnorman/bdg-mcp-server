@@ -1,10 +1,12 @@
 import os
-import httpx
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Any, Optional
 import json
+import httpx
+import asyncio
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from typing import Any, Optional
+import uuid
 
 app = FastAPI(title="bdgSignal MCP Server")
 
@@ -21,7 +23,7 @@ app.add_middleware(
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ojsgvzqsqtlogrtviucn.supabase.co")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 
-# Tool Definitions für MCP
+# Tool Definitions
 TOOLS = [
     {
         "name": "metrics_query",
@@ -165,7 +167,6 @@ TOOLS = [
     }
 ]
 
-# Tool name → Edge Function mapping
 TOOL_TO_FUNCTION = {
     "metrics_query": "ai-metrics-query",
     "goals_status": "ai-goals-status",
@@ -181,63 +182,126 @@ TOOL_TO_FUNCTION = {
 }
 
 
-class ToolCallRequest(BaseModel):
-    name: str
-    arguments: dict
-    jwt: Optional[str] = None
-
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "service": "bdgSignal MCP Server"}
-
-
-@app.get("/mcp/tools")
-async def list_tools():
-    """MCP: List available tools"""
-    return {"tools": TOOLS}
-
-
-@app.post("/mcp/call")
-async def call_tool(request: ToolCallRequest):
-    """MCP: Execute a tool"""
-    tool_name = request.name
-    arguments = request.arguments
-    jwt = request.jwt
+async def call_edge_function(tool_name: str, arguments: dict, jwt: str = None) -> dict:
+    """Call Supabase Edge Function"""
+    function_name = TOOL_TO_FUNCTION.get(tool_name)
+    if not function_name:
+        return {"error": f"Unknown tool: {tool_name}"}
     
-    if tool_name not in TOOL_TO_FUNCTION:
-        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    
-    function_name = TOOL_TO_FUNCTION[tool_name]
     url = f"{SUPABASE_URL}/functions/v1/{function_name}"
-    
     headers = {
         "Content-Type": "application/json",
         "apikey": SUPABASE_ANON_KEY,
     }
-    
     if jwt:
         headers["Authorization"] = f"Bearer {jwt}"
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.post(url, json=arguments, headers=headers)
-            
             if response.status_code >= 400:
-                return {
-                    "error": True,
-                    "status": response.status_code,
-                    "message": response.text
-                }
-            
-            return {
-                "result": response.json()
-            }
+                return {"error": response.text, "status": response.status_code}
+            return response.json()
         except Exception as e:
-            return {
-                "error": True,
-                "message": str(e)
+            return {"error": str(e)}
+
+
+def create_jsonrpc_response(id: Any, result: Any = None, error: dict = None) -> dict:
+    """Create JSON-RPC 2.0 response"""
+    response = {"jsonrpc": "2.0", "id": id}
+    if error:
+        response["error"] = error
+    else:
+        response["result"] = result
+    return response
+
+
+async def handle_jsonrpc(request_data: dict) -> dict:
+    """Handle JSON-RPC request"""
+    method = request_data.get("method", "")
+    params = request_data.get("params", {})
+    req_id = request_data.get("id")
+    
+    # Initialize
+    if method == "initialize":
+        return create_jsonrpc_response(req_id, {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {"listChanged": False}
+            },
+            "serverInfo": {
+                "name": "bdgSignal",
+                "version": "1.0.0"
             }
+        })
+    
+    # List tools
+    elif method == "tools/list":
+        return create_jsonrpc_response(req_id, {"tools": TOOLS})
+    
+    # Call tool
+    elif method == "tools/call":
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+        
+        if tool_name not in TOOL_TO_FUNCTION:
+            return create_jsonrpc_response(req_id, error={
+                "code": -32602,
+                "message": f"Unknown tool: {tool_name}"
+            })
+        
+        result = await call_edge_function(tool_name, arguments)
+        
+        return create_jsonrpc_response(req_id, {
+            "content": [{"type": "text", "text": json.dumps(result)}]
+        })
+    
+    # Ping
+    elif method == "ping":
+        return create_jsonrpc_response(req_id, {})
+    
+    # Unknown method
+    else:
+        return create_jsonrpc_response(req_id, error={
+            "code": -32601,
+            "message": f"Method not found: {method}"
+        })
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "bdgSignal MCP Server", "protocol": "MCP"}
+
+
+@app.api_route("/mcp", methods=["GET", "POST"])
+async def mcp_endpoint(request: Request):
+    """MCP Streamable HTTP endpoint"""
+    
+    if request.method == "GET":
+        # SSE stream for server-initiated messages (not used for now)
+        async def event_stream():
+            yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+    
+    # POST - Handle JSON-RPC requests
+    try:
+        body = await request.json()
+    except:
+        return Response(
+            content=json.dumps(create_jsonrpc_response(None, error={
+                "code": -32700,
+                "message": "Parse error"
+            })),
+            media_type="application/json"
+        )
+    
+    # Handle batch or single request
+    if isinstance(body, list):
+        responses = [await handle_jsonrpc(req) for req in body]
+        return Response(content=json.dumps(responses), media_type="application/json")
+    else:
+        response = await handle_jsonrpc(body)
+        return Response(content=json.dumps(response), media_type="application/json")
 
 
 @app.get("/health")
