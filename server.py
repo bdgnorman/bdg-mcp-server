@@ -152,6 +152,21 @@ TOOLS = [
         }
     },
     {
+        "name": "workflows_create",
+        "description": "Create automation workflow as DRAFT (requires confirmation)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "brand_id": {"type": "string"},
+                "trigger_type": {"type": "string", "enum": ["doi_confirmed", "tag_added", "score_reached", "manual"]},
+                "template": {"type": "string", "enum": ["welcome_series", "re_engagement", "lead_nurturing", "score_threshold"]},
+                "confirmed": {"type": "boolean", "default": False}
+            },
+            "required": ["name"]
+        }
+    },
+    {
         "name": "campaigns_create",
         "description": "Create campaign as DRAFT (requires confirmation)",
         "inputSchema": {
@@ -178,6 +193,7 @@ TOOL_TO_FUNCTION = {
     "contacts_create": "ai-contacts-create",
     "contacts_update": "ai-contacts-update",
     "segments_create": "ai-segments-create",
+    "workflows_create": "ai-workflows-create",
     "campaigns_create": "ai-campaigns-create",
 }
 
