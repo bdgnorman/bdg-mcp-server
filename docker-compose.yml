@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  mcp-server:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SUPABASE_URL=https://ojsgvzqsqtlogrtviucn.supabase.co
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    restart: unless-stopped
