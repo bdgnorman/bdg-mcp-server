@@ -19,7 +19,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://ojsgvzqsqtlogrtviucn.supabase.
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 
 # Default account_id for LangSmith testing (bdg account)
-DEFAULT_ACCOUNT_ID = "7bb67743-b7c8-4fb8-a9ca-e10cb4815fc4"
+DEFAULT_ACCOUNT_ID = os.getenv("DEFAULT_ACCOUNT_ID", "7c634307-06b4-48fd-b75a-0b3c8900bf66")
 
 # ============================================================
 # TOOL DEFINITIONS - READ TOOLS (no side effects)
