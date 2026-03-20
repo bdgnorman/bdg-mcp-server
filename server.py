@@ -148,7 +148,6 @@ async def sse_endpoint(request: Request):
 
 @app.post("/message")
 async def message_endpoint(request: Request):
-    if not check_auth(request): return JSONResponse({"error":"Unauthorized"},status_code=401)
     session_id = request.query_params.get("sessionId")
     if not session_id or session_id not in sessions:
         return JSONResponse({"error": "Invalid session"}, status_code=400)
