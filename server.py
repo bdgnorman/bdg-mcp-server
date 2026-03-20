@@ -22,8 +22,14 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://api.signal.bdg.io")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 DEFAULT_ACCOUNT_ID = os.getenv("DEFAULT_ACCOUNT_ID", "7c634307-06b4-48fd-b75a-0b3c8900bf66")
 DEPLOY_SECRET = os.getenv("DEPLOY_SECRET", "bdgsignal-deploy-2026")
+MCP_API_KEY = os.getenv("MCP_API_KEY", "")
 
 sessions = {}
+
+def check_auth(request):
+    if not MCP_API_KEY: return True
+    key = request.headers.get("Authorization", "").replace("Bearer ", "").strip() or request.query_params.get("api_key", "")
+    return key == MCP_API_KEY
 
 ALL_TOOLS = [
     {"name": "metrics_query", "description": "Query marketing metrics (sessions, email stats, ad performance).", "inputSchema": {"type": "object", "properties": {"metric_type": {"type": "string", "enum": ["website", "email", "paid", "organic", "leads"]}, "date_range": {"type": "string", "enum": ["7d", "30d", "90d", "ytd"]}}, "required": ["metric_type"]}},
@@ -118,6 +124,7 @@ def handle_mcp_message(body: dict):
 
 @app.get("/sse")
 async def sse_endpoint(request: Request):
+    if not check_auth(request): return JSONResponse({"error":"Unauthorized"},status_code=401)
     session_id = str(uuid.uuid4())
     queue = asyncio.Queue()
     sessions[session_id] = queue
@@ -141,6 +148,7 @@ async def sse_endpoint(request: Request):
 
 @app.post("/message")
 async def message_endpoint(request: Request):
+    if not check_auth(request): return JSONResponse({"error":"Unauthorized"},status_code=401)
     session_id = request.query_params.get("sessionId")
     if not session_id or session_id not in sessions:
         return JSONResponse({"error": "Invalid session"}, status_code=400)
