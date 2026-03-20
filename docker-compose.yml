@@ -6,6 +6,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - SUPABASE_URL=https://ojsgvzqsqtlogrtviucn.supabase.co
+      - SUPABASE_URL=https://api.signal.bdg.io
       - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - DEFAULT_ACCOUNT_ID=7c634307-06b4-48fd-b75a-0b3c8900bf66
+      - DEPLOY_SECRET=${DEPLOY_SECRET:-bdgsignal-deploy-2026}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
