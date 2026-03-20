@@ -61,13 +61,20 @@ async def call_edge_function(function_name: str, params: dict) -> dict:
         return response.json()
 
 
-async def call_deploy_webhook(environment: str) -> dict:
+def call_deploy_subprocess(environment: str) -> dict:
+    import subprocess
+    cmds = {
+        "staging": "cd /var/www/bdgsignal-staging && git stash && git pull origin main && docker run --rm -v $(pwd):/app -w /app node:20-alpine sh -c \'npm install && npm run build\' && docker restart bdgsignal-staging",
+        "production": "cd /var/www/bdgsignal-production && git stash && git pull origin main && docker run --rm -v $(pwd):/app -w /app node:20-alpine sh -c \'npm install && npm run build\' && docker restart bdgsignal-production"
+    }
+    cmd = cmds.get(environment)
+    if not cmd:
+        return {"success": False, "error": f"Unknown environment: {environment}"}
     try:
-        url = f"http://localhost:9000/deploy-{environment}"
-        headers = {"X-Deploy-Secret": DEPLOY_SECRET}
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(url, headers=headers)
-            return {"success": True, "output": response.text}
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
+        if r.returncode == 0:
+            return {"success": True, "output": r.stdout[-1000:]}
+        return {"success": False, "error": r.stderr[-500:]}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -76,13 +83,13 @@ async def handle_tool_call(tool_name: str, tool_args: dict) -> str:
     if tool_name == "deploy_staging":
         if not tool_args.get("confirmed"):
             return "Bitte mit confirmed=true bestätigen um Staging zu deployen."
-        result = await call_deploy_webhook("staging")
+        result = call_deploy_subprocess("staging")
         return f"✅ Staging deployed!" if result.get("success") else f"❌ Fehler: {result.get('error')}"
 
     if tool_name == "deploy_production":
         if not tool_args.get("confirmed"):
             return "Bitte mit confirmed=true bestätigen um Production zu deployen."
-        result = await call_deploy_webhook("production")
+        result = call_deploy_subprocess("production")
         return f"✅ Production deployed!" if result.get("success") else f"❌ Fehler: {result.get('error')}"
 
     if tool_name in TOOL_TO_FUNCTION:
