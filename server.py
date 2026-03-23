@@ -70,7 +70,7 @@ async def call_edge_function(function_name: str, params: dict) -> dict:
 def call_deploy_subprocess(environment: str) -> dict:
     import subprocess
     cmds = {
-        "staging": "cd /var/www/bdgsignal-staging && git stash && git pull origin main && docker run --rm -v $(pwd):/app -w /app node:20-alpine sh -c \'npm install && npm run build\' && docker restart bdgsignal-staging",
+        "staging": "cd /var/www/bdgsignal-staging && git stash && git pull origin main && docker run --rm -v $(pwd):/app -w /app node:20-alpine sh -c \'npm install && npm run build -- --mode staging\' && docker restart bdgsignal-staging",
         "production": "cd /var/www/bdgsignal-production && git stash && git pull origin main && docker run --rm -v $(pwd):/app -w /app node:20-alpine sh -c \'npm install && cp .env.production .env && npm run build\' && docker restart bdgsignal-production"
     }
     cmd = cmds.get(environment)
